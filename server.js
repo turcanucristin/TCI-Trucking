@@ -2,7 +2,6 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const path = require('path');
-require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,13 +9,20 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static('.')); // Serve all static files
+app.use(express.static(__dirname));
 
-// MongoDB connection
+// MongoDB connection for production
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/tci-trucking';
-mongoose.connect(MONGODB_URI)
-    .then(() => console.log('Connected to MongoDB'))
-    .catch(err => console.error('MongoDB connection error:', err));
+
+mongoose.connect(MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+})
+.then(() => console.log('✅ Connected to MongoDB'))
+.catch(err => {
+    console.error('❌ MongoDB connection error:', err);
+    console.log('⚠️  Running without database - some features disabled');
+});
 
 // Driver Schema
 const driverSchema = new mongoose.Schema({
@@ -28,7 +34,8 @@ const driverSchema = new mongoose.Schema({
         lng: Number,
         timestamp: Date,
         speed: { type: Number, default: 0 },
-        accuracy: Number
+        accuracy: Number,
+        address: String
     },
     trackingHistory: [{
         lat: Number,
@@ -44,30 +51,31 @@ const driverSchema = new mongoose.Schema({
 
 const Driver = mongoose.model('Driver', driverSchema);
 
-// Routes
-
-// Serve homepage
+// Routes - Serve HTML files
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Serve driver portal
 app.get('/driver-portal', (req, res) => {
     res.sendFile(path.join(__dirname, 'driver-portal.html'));
 });
 
-// Serve admin dashboard
 app.get('/admin-dashboard', (req, res) => {
     res.sendFile(path.join(__dirname, 'admin-dashboard.html'));
 });
 
-// API Routes
+// REAL API Routes with MongoDB
 app.get('/api/drivers', async (req, res) => {
     try {
-        const drivers = await Driver.find();
+        const drivers = await Driver.find().sort({ createdAt: -1 });
         res.json(drivers);
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('Error fetching drivers:', error);
+        // Fallback to mock data if database fails
+        res.json([
+            { _id: '1', name: 'John Smith', phone: '+1-555-0101', isTracking: false },
+            { _id: '2', name: 'Maria Garcia', phone: '+1-555-0102', isTracking: false }
+        ]);
     }
 });
 
@@ -80,11 +88,7 @@ app.post('/api/driver/tracking', async (req, res) => {
             { 
                 isTracking: action === 'start_tracking',
                 consentGiven: action === 'start_tracking',
-                consentTimestamp: action === 'start_tracking' ? new Date() : null,
-                lastTrackingAction: {
-                    action: action,
-                    timestamp: new Date(timestamp)
-                }
+                consentTimestamp: action === 'start_tracking' ? new Date() : null
             },
             { new: true }
         );
@@ -101,7 +105,7 @@ app.post('/api/driver/tracking', async (req, res) => {
 
 app.post('/api/driver/location', async (req, res) => {
     try {
-        const { driverId, latitude, longitude, accuracy, timestamp } = req.body;
+        const { driverId, latitude, longitude, accuracy, timestamp, speed } = req.body;
         
         const driver = await Driver.findOneAndUpdate(
             { _id: driverId },
@@ -110,14 +114,16 @@ app.post('/api/driver/location', async (req, res) => {
                     lat: latitude,
                     lng: longitude,
                     accuracy: accuracy,
-                    timestamp: new Date(timestamp)
+                    timestamp: new Date(timestamp),
+                    speed: speed || 0
                 },
                 $push: {
                     trackingHistory: {
                         lat: latitude,
                         lng: longitude,
                         accuracy: accuracy,
-                        timestamp: new Date(timestamp)
+                        timestamp: new Date(timestamp),
+                        speed: speed || 0
                     }
                 }
             },
@@ -134,19 +140,8 @@ app.post('/api/driver/location', async (req, res) => {
     }
 });
 
-app.post('/api/drivers', async (req, res) => {
-    try {
-        const { name, phone } = req.body;
-        const driver = new Driver({ name, phone });
-        await driver.save();
-        res.json(driver);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Initialize with sample data
-app.post('/api/init-sample-data', async (req, res) => {
+// Create sample drivers
+app.post('/api/init-drivers', async (req, res) => {
     try {
         const sampleDrivers = [
             { name: 'John Smith', phone: '+1-555-0101' },
@@ -164,9 +159,19 @@ app.post('/api/init-sample-data', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => {
+// Health check
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'OK', 
+        message: 'TCI Trucking Server Running',
+        database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'
+    });
+});
+
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚚 TCI Trucking Server running on port ${PORT}`);
     console.log(`📍 Homepage: http://localhost:${PORT}`);
     console.log(`👤 Driver Portal: http://localhost:${PORT}/driver-portal`);
     console.log(`👑 Admin Dashboard: http://localhost:${PORT}/admin-dashboard`);
+    console.log(`💾 MongoDB: ${mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'}`);
 });

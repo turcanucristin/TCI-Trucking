@@ -142,6 +142,23 @@
             text-align: center;
             margin-top: 40px;
         }
+
+        .refresh-indicator {
+            text-align: center;
+            margin-bottom: 20px;
+            color: var(--text-light);
+            font-size: 0.9rem;
+        }
+
+        .refresh-indicator .loading {
+            color: var(--primary-blue);
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
     </style>
 </head>
 <body>
@@ -163,6 +180,9 @@
             <div class="dashboard-header">
                 <h1>TCI TRUCKING</h1>
                 <p>Admin Dashboard - Real-Time Fleet Management</p>
+                <div class="refresh-indicator">
+                    <span id="lastUpdate">Auto-refreshing every 5 seconds...</span>
+                </div>
             </div>
 
             <div class="stats-grid">
@@ -219,9 +239,13 @@
             constructor() {
                 this.map = null;
                 this.drivers = new Map();
+                this.refreshInterval = 5000; // 5 seconds
+                this.lastUpdateTime = null;
                 this.initMap();
                 this.loadDrivers();
-                setInterval(() => this.updateDrivers(), 5000);
+                
+                // Start auto-refresh every 5 seconds
+                setInterval(() => this.updateDrivers(), this.refreshInterval);
             }
 
             initMap() {
@@ -238,8 +262,10 @@
                     const drivers = await response.json();
                     this.updateDashboard(drivers);
                     drivers.forEach(driver => this.addDriverToMap(driver));
+                    this.updateLastUpdateTime();
                 } catch (error) {
                     console.error('Error loading drivers:', error);
+                    this.showError('Failed to load drivers');
                 }
             }
 
@@ -247,7 +273,12 @@
                 const total = drivers.length;
                 const active = drivers.filter(d => d.isTracking).length;
                 const onTimeRate = Math.round((active / total) * 100) || 0;
-                const avgSpeed = Math.round(drivers.reduce((sum, d) => sum + (d.lastLocation?.speed || 0), 0) / total * 2.237) || 0;
+                
+                // Calculate average speed in mph
+                const activeDriversWithSpeed = drivers.filter(d => d.isTracking && d.lastLocation && d.lastLocation.speed);
+                const avgSpeed = activeDriversWithSpeed.length > 0 
+                    ? Math.round(activeDriversWithSpeed.reduce((sum, d) => sum + d.lastLocation.speed, 0) / activeDriversWithSpeed.length)
+                    : 0;
 
                 document.getElementById('totalDrivers').textContent = total;
                 document.getElementById('activeDrivers').textContent = active;
@@ -259,6 +290,22 @@
 
             updateDriversList(drivers) {
                 const container = document.getElementById('driversContainer');
+                if (drivers.length === 0) {
+                    container.innerHTML = `
+                        <div class="driver-item">
+                            <div class="driver-info">
+                                <div class="driver-status status-offline"></div>
+                                <div class="driver-details">
+                                    <h4>No drivers found</h4>
+                                    <p>Add drivers to see them here</p>
+                                </div>
+                            </div>
+                            <div class="driver-location">--</div>
+                        </div>
+                    `;
+                    return;
+                }
+
                 container.innerHTML = drivers.map(driver => `
                     <div class="driver-item">
                         <div class="driver-info">
@@ -297,6 +344,7 @@
                         <h3>${driver.name}</h3>
                         <p><strong>Status:</strong> ${driver.isTracking ? 'Online' : 'Offline'}</p>
                         <p><strong>Phone:</strong> ${driver.phone}</p>
+                        <p><strong>Speed:</strong> ${driver.lastLocation.speed || 0} mph</p>
                         <p><strong>Last Update:</strong> ${new Date(driver.lastLocation.timestamp).toLocaleString()}</p>
                     </div>
                 `);
@@ -310,17 +358,66 @@
                     const drivers = await response.json();
                     this.updateDashboard(drivers);
                     
+                    // Update existing markers and add new ones
                     drivers.forEach(driver => {
                         const marker = this.drivers.get(driver._id);
                         if (marker && driver.lastLocation) {
+                            // Update marker position
                             marker.setLatLng([driver.lastLocation.lat, driver.lastLocation.lng]);
+                            
+                            // Update popup content
+                            marker.setPopupContent(`
+                                <div style="min-width: 200px;">
+                                    <h3>${driver.name}</h3>
+                                    <p><strong>Status:</strong> ${driver.isTracking ? 'Online' : 'Offline'}</p>
+                                    <p><strong>Phone:</strong> ${driver.phone}</p>
+                                    <p><strong>Speed:</strong> ${driver.lastLocation.speed || 0} mph</p>
+                                    <p><strong>Last Update:</strong> ${new Date(driver.lastLocation.timestamp).toLocaleString()}</p>
+                                </div>
+                            `);
                         } else if (!marker && driver.lastLocation) {
+                            // Add new marker
                             this.addDriverToMap(driver);
                         }
                     });
+
+                    // Remove markers for drivers that no longer exist
+                    const currentDriverIds = drivers.map(d => d._id);
+                    this.drivers.forEach((marker, driverId) => {
+                        if (!currentDriverIds.includes(driverId)) {
+                            marker.remove();
+                            this.drivers.delete(driverId);
+                        }
+                    });
+
+                    this.updateLastUpdateTime();
                 } catch (error) {
                     console.error('Error updating drivers:', error);
+                    this.showError('Failed to update driver locations');
                 }
+            }
+
+            updateLastUpdateTime() {
+                this.lastUpdateTime = new Date();
+                const lastUpdateElement = document.getElementById('lastUpdate');
+                lastUpdateElement.textContent = `Last updated: ${this.lastUpdateTime.toLocaleTimeString()} (Auto-refreshing every 5 seconds)`;
+                
+                // Add loading animation briefly
+                lastUpdateElement.classList.add('loading');
+                setTimeout(() => {
+                    lastUpdateElement.classList.remove('loading');
+                }, 500);
+            }
+
+            showError(message) {
+                const lastUpdateElement = document.getElementById('lastUpdate');
+                lastUpdateElement.textContent = `${message} - Last attempt: ${new Date().toLocaleTimeString()}`;
+                lastUpdateElement.style.color = 'var(--accent-red)';
+                
+                // Reset color after 3 seconds
+                setTimeout(() => {
+                    lastUpdateElement.style.color = '';
+                }, 3000);
             }
         }
 
